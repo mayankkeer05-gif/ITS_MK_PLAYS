@@ -29,7 +29,7 @@
     "chat-messages": {
       "enabled": true,
       "repeat": true,
-      "repeat-delay": 1200000,
+      "repeat-delay": 12005000,
       "messages":"{ I AM HERE 
       }
     },
