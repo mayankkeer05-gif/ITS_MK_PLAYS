@@ -30,8 +30,8 @@
       "enabled": true,
       "repeat": true,
       "repeat-delay": 12005000,
-      "messages":"{ I AM HERE 
-      }
+      "messages":[ " I AM HERE "
+      ]
     },
     "chat-log": true,
     "auto-reconnect": true,
