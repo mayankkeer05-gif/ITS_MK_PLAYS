@@ -27,10 +27,10 @@
       "sneak": true
     },
     "chat-messages": {
-      "enabled": true,
+      "enabled": false,
       "repeat": true,
       "repeat-delay": 12005000,
-      "messages":[ " I AM HERE "
+      "messages":[ " I  "
       ]
     },
     "chat-log": true,
