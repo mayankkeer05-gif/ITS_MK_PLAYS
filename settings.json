@@ -2,7 +2,7 @@
   "name": "ITS_MK_BOT",
   "bot-account": {
     "username": "ITS_MK_BOT",
-    "password": "",
+    "password": "663535op",
     "type": "offline"
   },
   "server": {
@@ -20,7 +20,7 @@
   "utils": {
     "auto-auth": {
       "enabled": true,
-      "password": "1234554321"
+      "password": "663535op"
     },
     "anti-afk": {
       "enabled": true,
