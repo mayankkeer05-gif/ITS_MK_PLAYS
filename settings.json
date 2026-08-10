@@ -6,8 +6,8 @@
     "type": "offline"
   },
   "server": {
-    "ip": "ITS_MK_SMP.aternos.me",
-    "port": 59541,
+    "ip": "ITS_MK_CREATE.aternos.me",
+    "port": 37984,
     "version": "",
     "try-creative": false
   },
