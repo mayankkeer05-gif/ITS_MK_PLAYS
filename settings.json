@@ -6,8 +6,8 @@
     "type": "offline"
   },
   "server": {
-    "ip": "ITS_MK_CREATE.aternos.me",
-    "port": 37984,
+    "ip": "ITS_MK_SMP.aternos.me:59541",
+    "port": 59541,
     "version": "",
     "try-creative": false
   },
@@ -51,7 +51,7 @@
     },
     "random-jump": {
       "enabled": true,
-      "interval": 10000
+      "interval": 100000
     }
   },
   "modules": {
