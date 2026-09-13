@@ -29,7 +29,7 @@
     "chat-messages": {
       "enabled": false,
       "repeat": true,
-      "repeat-delay": 120050,
+      "repeat-delay": 1250,
       "messages":[ "MADE BY ITS_MK_PLAYS"
       ]
     },
