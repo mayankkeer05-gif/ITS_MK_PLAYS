@@ -6,8 +6,8 @@
     "type": "offline"
   },
   "server": {
-    "ip": "LIFEsteleesmp.aternos.me:37332",
-    "port": 59541,
+    "ip": "LIFEsteleesmp.aternos.me",
+    "port": 37332,
     "version": "",
     "try-creative": false
   },
