@@ -1,12 +1,12 @@
 {
-  "name": "ITS_MK_BOT_01",
+  "name": "ITS_MK_BOT_03",
   "bot-account": {
-    "username": "ITS_MK_BOT_01",
+    "username": "ITS_MK_BOT_03",
     "password": "663535op",
     "type": "offline"
   },
   "server": {
-    "ip": "ITS_MK_SMP.aternos.me",
+    "ip": "LIFEsteleesmp.aternos.me:37332",
     "port": 59541,
     "version": "",
     "try-creative": false
