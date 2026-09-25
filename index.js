@@ -1,18 +1,634 @@
+"use strict";
+
 // ============================================================
-// PROFESSIONAL MK PANEL
+// MK PANEL • MINECRAFT BOT CONTROL
+// MADE BY MAYANK_KEER
+// MADE BY ITS_MK_PLAYS
+// ============================================================
+
+const express = require("express");
+const http = require("http");
+const mineflayer = require("mineflayer");
+
+let pathfinder;
+let Movements;
+
+try {
+  const pf = require("mineflayer-pathfinder");
+  pathfinder = pf.pathfinder;
+  Movements = pf.Movements;
+} catch (e) {
+  console.log("mineflayer-pathfinder not installed");
+}
+
+const { addLog, getLogs } = require("./logger");
+const config = require("./settings.json");
+
+const app = express();
+const server = http.createServer(app);
+
+const PORT = Number(process.env.PORT || config.port || 3000);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ============================================================
+// STATE
+// ============================================================
+
+let bot = null;
+let botStarting = false;
+let manuallyStopped = false;
+let reconnectTimer = null;
+
+let connectedAt = 0;
+let lastError = "";
+let lastEvent = "Panel started";
+
+let panelSettings = {
+  autoReconnect: true,
+  autoStart: false,
+  showCoordinates: true,
+  sounds: true,
+  refreshRate: 5000
+};
+
+// ============================================================
+// SAFE LOGGER
+// ============================================================
+
+function log(message) {
+  const text = `[MK PANEL] ${message}`;
+
+  console.log(text);
+
+  try {
+    if (typeof addLog === "function") {
+      addLog(text);
+    }
+  } catch {}
+}
+
+function getBotUsername() {
+  return (
+    config.username ||
+    config.botUsername ||
+    config.bot?.username ||
+    config.name ||
+    "MK_BOT"
+  );
+}
+
+function getServerHost() {
+  return (
+    config.server?.ip ||
+    config.server?.host ||
+    config.host ||
+    config.ip ||
+    "localhost"
+  );
+}
+
+function getServerPort() {
+  return Number(
+    config.server?.port ||
+    config.port ||
+    25565
+  );
+}
+
+function getServerVersion() {
+  return (
+    config.server?.version ||
+    config.version ||
+    false
+  );
+}
+
+// ============================================================
+// BOT
+// ============================================================
+
+async function startBot() {
+  if (botStarting) {
+    return;
+  }
+
+  if (bot && bot.player) {
+    log("Bot is already connected.");
+    return;
+  }
+
+  botStarting = true;
+  manuallyStopped = false;
+  lastError = "";
+  lastEvent = "Connecting";
+
+  clearTimeout(reconnectTimer);
+
+  const host = getServerHost();
+  const port = getServerPort();
+  const username = getBotUsername();
+  const version = getServerVersion();
+
+  log(`Connecting to ${host}:${port} as ${username}`);
+
+  try {
+    const options = {
+      host,
+      port,
+      username,
+      auth: config.auth || config.bot?.auth || "offline"
+    };
+
+    if (version) {
+      options.version = version;
+    }
+
+    bot = mineflayer.createBot(options);
+
+    if (pathfinder) {
+      bot.loadPlugin(pathfinder);
+    }
+
+    bot.on("login", () => {
+      lastEvent = "Logged in";
+      log("Bot logged into Minecraft.");
+    });
+
+    bot.on("spawn", () => {
+      botStarting = false;
+      connectedAt = Date.now();
+      lastEvent = "Connected";
+      lastError = "";
+
+      log("Bot connected successfully.");
+
+      try {
+        if (pathfinder && Movements) {
+          const mcData = require("minecraft-data")(bot.version);
+          const movements = new Movements(bot, mcData);
+
+          bot.pathfinder.setMovements(movements);
+        }
+      } catch (e) {
+        log("Pathfinder setup skipped.");
+      }
+    });
+
+    bot.on("end", () => {
+      botStarting = false;
+
+      const wasManual = manuallyStopped;
+
+      bot = null;
+      connectedAt = 0;
+
+      lastEvent = "Disconnected";
+
+      log(
+        wasManual
+          ? "Bot stopped."
+          : "Bot disconnected."
+      );
+
+      if (
+        !wasManual &&
+        panelSettings.autoReconnect
+      ) {
+        scheduleReconnect();
+      }
+    });
+
+    bot.on("error", (err) => {
+      botStarting = false;
+
+      lastError = String(
+        err?.message || err
+      );
+
+      lastEvent = "Error";
+
+      log(`Bot error: ${lastError}`);
+    });
+
+    bot.on("kicked", (reason) => {
+      const text =
+        typeof reason === "string"
+          ? reason
+          : JSON.stringify(reason);
+
+      lastError = text;
+      lastEvent = "Kicked";
+
+      log(`Bot kicked: ${text}`);
+    });
+
+    bot.on("chat", (username, message) => {
+      log(`<${username}> ${message}`);
+    });
+
+    bot.on("death", () => {
+      lastEvent = "Bot died";
+      log("Bot died.");
+    });
+
+    bot.on("health", () => {
+      // Keep event available without spamming logs.
+    });
+
+  } catch (err) {
+    botStarting = false;
+    bot = null;
+
+    lastError = String(
+      err?.message || err
+    );
+
+    lastEvent = "Start failed";
+
+    log(`Start failed: ${lastError}`);
+  }
+}
+
+async function stopBot() {
+  manuallyStopped = true;
+
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+
+  if (!bot) {
+    botStarting = false;
+    connectedAt = 0;
+    lastEvent = "Stopped";
+    log("Bot is already stopped.");
+    return;
+  }
+
+  const currentBot = bot;
+
+  bot = null;
+  botStarting = false;
+  connectedAt = 0;
+  lastEvent = "Stopped";
+
+  try {
+    currentBot.quit("MK Panel stopped");
+  } catch {
+    try {
+      currentBot.end();
+    } catch {}
+  }
+
+  log("Bot stopped from panel.");
+}
+
+async function restartBot() {
+  log("Restarting bot...");
+
+  manuallyStopped = true;
+
+  await stopBot();
+
+  await new Promise(resolve =>
+    setTimeout(resolve, 1200)
+  );
+
+  await startBot();
+}
+
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+
+  log("Auto reconnect scheduled in 10 seconds.");
+
+  reconnectTimer = setTimeout(() => {
+    if (
+      !manuallyStopped &&
+      panelSettings.autoReconnect
+    ) {
+      startBot();
+    }
+  }, 10000);
+}
+
+// ============================================================
+// HEALTH
+// ============================================================
+
+app.get("/health", (req, res) => {
+  const online =
+    !!bot &&
+    !!bot.player;
+
+  let coords = null;
+
+  if (
+    online &&
+    panelSettings.showCoordinates &&
+    bot.entity?.position
+  ) {
+    coords = {
+      x: Number(bot.entity.position.x),
+      y: Number(bot.entity.position.y),
+      z: Number(bot.entity.position.z)
+    };
+  }
+
+  const memory =
+    process.memoryUsage().heapUsed /
+    1024 /
+    1024;
+
+  const uptime =
+    connectedAt
+      ? Math.floor(
+          (Date.now() - connectedAt) / 1000
+        )
+      : 0;
+
+  res.json({
+    status: online
+      ? "connected"
+      : "disconnected",
+
+    uptime,
+
+    memoryUsage:
+      Number(memory.toFixed(2)),
+
+    coords,
+
+    username: getBotUsername(),
+
+    server: {
+      host: getServerHost(),
+      port: getServerPort()
+    },
+
+    event: lastEvent,
+
+    error: lastError
+  });
+});
+
+// ============================================================
+// PING
+// ============================================================
+
+app.get("/ping", (req, res) => {
+  res.json({
+    success: true,
+    message: "MK Panel is online",
+    time: new Date().toISOString()
+  });
+});
+
+// ============================================================
+// LOG API
+// ============================================================
+
+app.get("/api/logs", (req, res) => {
+  try {
+    const logs =
+      typeof getLogs === "function"
+        ? getLogs()
+        : [];
+
+    res.json({
+      logs: Array.isArray(logs)
+        ? logs
+        : []
+    });
+
+  } catch (err) {
+    res.json({
+      logs: []
+    });
+  }
+});
+
+// ============================================================
+// SETTINGS API
+// NOTE: settings.json is NEVER modified
+// ============================================================
+
+app.get("/api/settings", (req, res) => {
+  res.json(panelSettings);
+});
+
+app.post("/api/settings", (req, res) => {
+  const body = req.body || {};
+
+  if (
+    typeof body.autoReconnect === "boolean"
+  ) {
+    panelSettings.autoReconnect =
+      body.autoReconnect;
+  }
+
+  if (
+    typeof body.autoStart === "boolean"
+  ) {
+    panelSettings.autoStart =
+      body.autoStart;
+  }
+
+  if (
+    typeof body.showCoordinates === "boolean"
+  ) {
+    panelSettings.showCoordinates =
+      body.showCoordinates;
+  }
+
+  if (
+    typeof body.sounds === "boolean"
+  ) {
+    panelSettings.sounds =
+      body.sounds;
+  }
+
+  if (
+    Number.isFinite(
+      Number(body.refreshRate)
+    )
+  ) {
+    panelSettings.refreshRate =
+      Math.max(
+        1000,
+        Math.min(
+          30000,
+          Number(body.refreshRate)
+        )
+      );
+  }
+
+  res.json({
+    success: true,
+    msg: "Settings saved"
+  });
+});
+
+// ============================================================
+// BOT CONTROLS
+// ============================================================
+
+app.post("/start", async (req, res) => {
+  try {
+    await startBot();
+
+    res.json({
+      success: true,
+      msg: "Bot start requested"
+    });
+
+  } catch (err) {
+    res.json({
+      success: false,
+      msg: err.message
+    });
+  }
+});
+
+app.post("/stop", async (req, res) => {
+  try {
+    await stopBot();
+
+    res.json({
+      success: true,
+      msg: "Bot stopped"
+    });
+
+  } catch (err) {
+    res.json({
+      success: false,
+      msg: err.message
+    });
+  }
+});
+
+app.post("/restart", async (req, res) => {
+  try {
+    await restartBot();
+
+    res.json({
+      success: true,
+      msg: "Bot restarted"
+    });
+
+  } catch (err) {
+    res.json({
+      success: false,
+      msg: err.message
+    });
+  }
+});
+
+// ============================================================
+// TUTORIAL
+// ============================================================
+
+app.get("/tutorial", (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+ content="width=device-width,initial-scale=1">
+<title>MK Panel Tutorial</title>
+
+<style>
+body{
+ margin:0;
+ min-height:100vh;
+ display:flex;
+ align-items:center;
+ justify-content:center;
+ background:#05070b;
+ color:#fff;
+ font-family:Arial,sans-serif;
+}
+.box{
+ width:min(600px,90%);
+ padding:30px;
+ border:1px solid #202a36;
+ border-radius:20px;
+ background:#0b1017;
+ box-shadow:0 30px 80px #000;
+}
+h1{
+ margin-top:0;
+}
+p{
+ color:#8995a5;
+ line-height:1.7;
+}
+a{
+ color:#45df8b;
+}
+</style>
+</head>
+
+<body>
+<div class="box">
+<h1>MK PANEL</h1>
+
+<p>
+Use the dashboard to start, stop and restart
+your Minecraft bot.
+</p>
+
+<p>
+Live Logs shows the latest bot activity.
+</p>
+
+<p>
+Settings controls panel options without changing
+your Minecraft settings.json.
+</p>
+
+<a href="/">← Back to Panel</a>
+
+</div>
+</body>
+</html>
+`);
+});
+
+// ============================================================
+// PROFESSIONAL PANEL
 // ============================================================
 
 app.get("/", (req, res) => {
-res.send(`
+
+  const title =
+    String(
+      config.name ||
+      "Minecraft Bot"
+    )
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  const serverName =
+    `${getServerHost()}:${getServerPort()}`
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  res.send(`
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>${config.name} • MK Panel</title>
+<meta
+ name="viewport"
+ content="width=device-width,initial-scale=1"
+>
 
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<title>${title} • MK Panel</title>
 
 <style>
 
@@ -43,21 +659,28 @@ body{
  min-height:100vh;
  overflow-x:hidden;
  background:
- radial-gradient(circle at 15% 10%,
- rgba(88,110,255,.15),
- transparent 28%),
- radial-gradient(circle at 90% 90%,
- rgba(35,230,135,.08),
- transparent 30%),
+ radial-gradient(
+  circle at 10% 10%,
+  rgba(88,110,255,.14),
+  transparent 28%
+ ),
+ radial-gradient(
+  circle at 90% 90%,
+  rgba(35,230,135,.08),
+  transparent 30%
+ ),
  var(--bg);
  color:var(--text);
- font-family:Inter,Arial,sans-serif;
+ font-family:
+ Inter,
+ Arial,
+ sans-serif;
 }
 
 /* animated background */
 
-body:before,
-body:after{
+body::before,
+body::after{
  content:"";
  position:fixed;
  width:350px;
@@ -69,14 +692,14 @@ body:after{
  z-index:-1;
 }
 
-body:before{
+body::before{
  background:#5c78ff;
  top:-120px;
  left:-100px;
  animation:float1 9s ease-in-out infinite;
 }
 
-body:after{
+body::after{
  background:#24df83;
  right:-100px;
  bottom:-130px;
@@ -84,11 +707,17 @@ body:after{
 }
 
 @keyframes float1{
- 50%{transform:translate(80px,70px)}
+ 50%{
+  transform:
+   translate(80px,70px);
+ }
 }
 
 @keyframes float2{
- 50%{transform:translate(-70px,-60px)}
+ 50%{
+  transform:
+   translate(-70px,-60px);
+ }
 }
 
 /* SIDEBAR */
@@ -100,14 +729,17 @@ body:after{
  left:0;
  width:245px;
  padding:25px 15px;
- background:rgba(7,11,17,.88);
- border-right:1px solid var(--border);
+ background:
+ rgba(7,11,17,.88);
+ border-right:
+ 1px solid var(--border);
  backdrop-filter:blur(20px);
  z-index:50;
 }
 
 .logo{
- padding:5px 12px 30px;
+ padding:
+ 5px 12px 30px;
 }
 
 .logo h1{
@@ -211,6 +843,7 @@ body:after{
  color:#9ba6b5;
  cursor:pointer;
  transition:.2s;
+ font-size:18px;
 }
 
 .icon:hover{
@@ -235,14 +868,16 @@ body:after{
  border-radius:17px;
  border:1px solid var(--border);
  background:
- linear-gradient(120deg,
- rgba(55,229,138,.08),
- transparent 60%),
+ linear-gradient(
+  120deg,
+  rgba(55,229,138,.08),
+  transparent 60%
+ ),
  var(--panel);
  animation:appear .5s ease;
 }
 
-.status:after{
+.status::after{
  content:"";
  position:absolute;
  width:180px;
@@ -255,7 +890,9 @@ body:after{
 }
 
 @keyframes rotate{
- to{transform:rotate(360deg)}
+ to{
+  transform:rotate(360deg);
+ }
 }
 
 @keyframes appear{
@@ -285,6 +922,7 @@ body:after{
  background:#251116;
  color:var(--red);
  font-size:21px;
+ transition:.3s;
 }
 
 .status-icon.online{
@@ -295,10 +933,13 @@ body:after{
 
 @keyframes pulse{
  0%,100%{
-  box-shadow:0 0 0 0 transparent;
+  box-shadow:
+   0 0 0 0 transparent;
  }
  50%{
-  box-shadow:0 0 0 9px rgba(56,229,138,.07);
+  box-shadow:
+   0 0 0 9px
+   rgba(56,229,138,.07);
  }
 }
 
@@ -331,7 +972,8 @@ body:after{
 
 .stats{
  display:grid;
- grid-template-columns:repeat(4,1fr);
+ grid-template-columns:
+ repeat(4,1fr);
  gap:13px;
  margin-top:15px;
 }
@@ -347,9 +989,17 @@ body:after{
  animation:card .6s ease both;
 }
 
-.card:nth-child(2){animation-delay:.05s}
-.card:nth-child(3){animation-delay:.1s}
-.card:nth-child(4){animation-delay:.15s}
+.card:nth-child(2){
+ animation-delay:.05s;
+}
+
+.card:nth-child(3){
+ animation-delay:.1s;
+}
+
+.card:nth-child(4){
+ animation-delay:.15s;
+}
 
 @keyframes card{
  from{
@@ -365,16 +1015,19 @@ body:after{
 .card:hover{
  transform:translateY(-4px);
  border-color:#2d3948;
+ box-shadow:
+  0 15px 40px rgba(0,0,0,.25);
 }
 
-.card:before{
+.card::before{
  content:"";
  position:absolute;
  top:0;
  left:-100%;
  width:60%;
  height:1px;
- background:linear-gradient(
+ background:
+ linear-gradient(
   90deg,
   transparent,
   #6f91ff,
@@ -384,7 +1037,9 @@ body:after{
 }
 
 @keyframes scan{
- to{left:150%}
+ to{
+  left:150%;
+ }
 }
 
 .label{
@@ -399,6 +1054,9 @@ body:after{
  margin-top:9px;
  font-size:19px;
  font-weight:800;
+ white-space:nowrap;
+ overflow:hidden;
+ text-overflow:ellipsis;
 }
 
 .sub{
@@ -407,11 +1065,12 @@ body:after{
  font-size:9px;
 }
 
-/* BUTTONS */
+/* CONTROLS */
 
 .controls{
  display:grid;
- grid-template-columns:repeat(3,1fr);
+ grid-template-columns:
+ repeat(3,1fr);
  gap:11px;
  margin-top:15px;
 }
@@ -428,7 +1087,7 @@ body:after{
  overflow:hidden;
 }
 
-.control:after{
+.control::after{
  content:"";
  position:absolute;
  width:70px;
@@ -440,7 +1099,7 @@ body:after{
  transition:.5s;
 }
 
-.control:hover:after{
+.control:hover::after{
  left:120%;
 }
 
@@ -471,8 +1130,6 @@ body:after{
  color:#7898ff;
 }
 
-/* LOADING */
-
 .loading{
  pointer-events:none;
  opacity:.55;
@@ -490,7 +1147,9 @@ body:after{
 }
 
 @keyframes spin{
- to{transform:rotate(360deg)}
+ to{
+  transform:rotate(360deg);
+ }
 }
 
 /* LOGS */
@@ -516,21 +1175,34 @@ body:after{
 }
 
 .logs{
- height:300px;
+ height:330px;
  overflow:auto;
  padding:15px;
  border:1px solid var(--border);
  border-radius:14px;
  background:#06090e;
  color:#8995a5;
- font-family:Consolas,monospace;
+ font-family:
+ Consolas,
+ monospace;
  font-size:11px;
  line-height:1.75;
 }
 
+.logs::-webkit-scrollbar{
+ width:7px;
+}
+
+.logs::-webkit-scrollbar-thumb{
+ background:#263241;
+ border-radius:20px;
+}
+
 .log{
  padding:2px 0;
- border-bottom:1px solid rgba(255,255,255,.025);
+ border-bottom:
+ 1px solid
+ rgba(255,255,255,.025);
 }
 
 /* MODAL */
@@ -551,11 +1223,16 @@ body:after{
 }
 
 .modal{
- width:min(490px,calc(100% - 28px));
+ width:min(
+  490px,
+  calc(100% - 28px)
+ );
  border:1px solid #293544;
  border-radius:18px;
  background:#0c121a;
- box-shadow:0 30px 100px rgba(0,0,0,.65);
+ box-shadow:
+  0 30px 100px
+  rgba(0,0,0,.65);
  animation:modalIn .22s ease;
  overflow:hidden;
 }
@@ -563,7 +1240,9 @@ body:after{
 @keyframes modalIn{
  from{
   opacity:0;
-  transform:translateY(20px) scale(.96);
+  transform:
+   translateY(20px)
+   scale(.96);
  }
  to{
   opacity:1;
@@ -576,7 +1255,8 @@ body:after{
  justify-content:space-between;
  align-items:center;
  padding:19px;
- border-bottom:1px solid var(--border);
+ border-bottom:
+ 1px solid var(--border);
 }
 
 .modal-head h3{
@@ -600,7 +1280,8 @@ body:after{
  justify-content:space-between;
  align-items:center;
  padding:14px 0;
- border-bottom:1px solid #19222d;
+ border-bottom:
+ 1px solid #19222d;
 }
 
 .setting-name{
@@ -626,787 +1307,4 @@ body:after{
 
 .slider{
  position:absolute;
- inset:0;
- border-radius:20px;
- background:#252e3a;
- cursor:pointer;
- transition:.2s;
-}
-
-.slider:before{
- content:"";
- position:absolute;
- width:17px;
- height:17px;
- left:3px;
- top:3px;
- border-radius:50%;
- background:#8c98a7;
- transition:.2s;
-}
-
-.switch input:checked+.slider{
- background:#17653f;
-}
-
-.switch input:checked+.slider:before{
- transform:translateX(20px);
- background:#45df8b;
-}
-
-.select{
- border:1px solid #2a3544;
- border-radius:8px;
- padding:7px;
- background:#151d27;
- color:white;
- font-size:10px;
-}
-
-.save{
- width:100%;
- height:45px;
- margin-top:17px;
- border:0;
- border-radius:10px;
- background:var(--green);
- color:#06130c;
- font-size:11px;
- font-weight:800;
- cursor:pointer;
- transition:.2s;
-}
-
-.save:hover{
- filter:brightness(1.08);
- transform:translateY(-1px);
-}
-
-/* TOAST */
-
-.toasts{
- position:fixed;
- right:20px;
- bottom:20px;
- z-index:200;
- display:flex;
- flex-direction:column;
- gap:8px;
-}
-
-.toast{
- min-width:250px;
- padding:13px 15px;
- border-radius:11px;
- border:1px solid #293543;
- background:#101720;
- box-shadow:0 15px 50px rgba(0,0,0,.5);
- font-size:11px;
- animation:toastIn .25s ease;
-}
-
-.toast.success{
- border-color:#216543;
-}
-
-.toast.error{
- border-color:#70303b;
-}
-
-@keyframes toastIn{
- from{
-  opacity:0;
-  transform:translateX(20px);
- }
- to{
-  opacity:1;
-  transform:none;
- }
-}
-
-/* FOOTER */
-
-.footer{
- text-align:center;
- padding:25px;
- margin-top:22px;
- color:#414b59;
- font-size:9px;
- line-height:1.9;
-}
-
-.footer strong{
- color:#6b7889;
-}
-
-/* MOBILE */
-
-@media(max-width:950px){
-
- .sidebar{
-  width:70px;
- }
-
- .logo{
-  padding-left:0;
-  padding-right:0;
-  text-align:center;
- }
-
- .logo h1{
-  font-size:15px;
- }
-
- .logo p,
- .nav-text,
- .credits{
-  display:none;
- }
-
- .nav button{
-  text-align:center;
-  padding:13px 0;
- }
-
- .main{
-  margin-left:70px;
- }
-
- .stats{
-  grid-template-columns:repeat(2,1fr);
- }
-
-}
-
-@media(max-width:600px){
-
- .main{
-  padding:16px;
- }
-
- .title h2{
-  font-size:22px;
- }
-
- .status{
-  padding:17px;
- }
-
- .badge{
-  display:none;
- }
-
- .controls{
-  grid-template-columns:1fr;
- }
-
- .stats{
-  gap:9px;
- }
-
- .card{
-  padding:15px;
- }
-
- .toasts{
-  left:15px;
-  right:15px;
-  bottom:15px;
- }
-
- .toast{
-  min-width:0;
- }
-
-}
-
-</style>
-</head>
-
-<body>
-
-<aside class="sidebar">
-
- <div class="logo">
-  <h1>MK PANEL</h1>
-  <p>MINECRAFT CONTROL</p>
- </div>
-
- <nav class="nav">
-
-  <button class="active" onclick="topPage()">
-   <span class="nav-icon">⌂</span>
-   <span class="nav-text">Dashboard</span>
-  </button>
-
-  <button onclick="logsPage()">
-   <span class="nav-icon">▤</span>
-   <span class="nav-text">Live Logs</span>
-  </button>
-
-  <button onclick="openSettings()">
-   <span class="nav-icon">⚙</span>
-   <span class="nav-text">Settings</span>
-  </button>
-
- </nav>
-
- <div class="credits">
-  <strong>MADE BY MAYANK_KEER</strong><br>
-  MADE BY ITS_MK_PLAYS
- </div>
-
-</aside>
-
-
-<main class="main">
-
- <div class="topbar">
-
-  <div class="title">
-   <h2>Control Dashboard</h2>
-   <p>Real-time Minecraft bot management</p>
-  </div>
-
-  <div class="actions">
-
-   <button class="icon" onclick="refreshAll()">↻</button>
-
-   <button class="icon" onclick="openSettings()">⚙</button>
-
-  </div>
-
- </div>
-
-
- <section class="status">
-
-  <div class="status-left">
-
-   <div id="statusIcon" class="status-icon">
-    ✕
-   </div>
-
-   <div>
-
-    <div id="statusTitle" class="status-title">
-     Disconnected
-    </div>
-
-    <div id="statusDesc" class="status-desc">
-     Waiting for bot connection
-    </div>
-
-   </div>
-
-  </div>
-
-  <div id="badge" class="badge">
-   OFFLINE
-  </div>
-
- </section>
-
-
- <section class="stats">
-
-  <div class="card">
-   <div class="label">Uptime</div>
-   <div id="uptime" class="value">0s</div>
-   <div class="sub">Current session</div>
-  </div>
-
-  <div class="card">
-   <div class="label">Coordinates</div>
-   <div id="coords" class="value">—</div>
-   <div class="sub">In-game position</div>
-  </div>
-
-  <div class="card">
-   <div class="label">Server</div>
-   <div id="server" class="value">Loading</div>
-   <div class="sub">Minecraft server</div>
-  </div>
-
-  <div class="card">
-   <div class="label">Memory</div>
-   <div id="memory" class="value">— MB</div>
-   <div class="sub">Node.js heap</div>
-  </div>
-
- </section>
-
-
- <section class="controls">
-
-  <button id="startBtn"
-   class="control start"
-   onclick="botAction('/start','Starting bot...')">
-   ▶ START BOT
-  </button>
-
-  <button id="stopBtn"
-   class="control stop"
-   onclick="botAction('/stop','Stopping bot...')">
-   ■ STOP BOT
-  </button>
-
-  <button id="restartBtn"
-   class="control restart"
-   onclick="botAction('/restart','Restarting bot...')">
-   ↻ RESTART BOT
-  </button>
-
- </section>
-
-
- <section id="logsSection" class="section">
-
-  <div class="section-head">
-   <h3>Live Console</h3>
-   <span id="logCount">0 entries</span>
-  </div>
-
-  <div id="logs" class="logs">
-   Loading logs...
-  </div>
-
- </section>
-
-
- <footer class="footer">
-
-  <strong>MADE BY MAYANK_KEER</strong><br>
-  MADE BY ITS_MK_PLAYS<br>
-  MK PANEL • MINECRAFT BOT CONTROL
-
- </footer>
-
-</main>
-
-
-<!-- SETTINGS -->
-
-<div id="overlay" class="overlay" onclick="outside(event)">
-
- <div class="modal">
-
-  <div class="modal-head">
-
-   <h3>Panel Settings</h3>
-
-   <button class="close" onclick="closeSettings()">×</button>
-
-  </div>
-
-  <div class="modal-body">
-
-   <div class="setting">
-
-    <div>
-     <div class="setting-name">Auto Reconnect</div>
-     <div class="setting-desc">
-      Automatically reconnect after disconnect
-     </div>
-    </div>
-
-    <label class="switch">
-     <input id="autoReconnect" type="checkbox">
-     <span class="slider"></span>
-    </label>
-
-   </div>
-
-
-   <div class="setting">
-
-    <div>
-     <div class="setting-name">Auto Start</div>
-     <div class="setting-desc">
-      Start bot when panel launches
-     </div>
-    </div>
-
-    <label class="switch">
-     <input id="autoStart" type="checkbox">
-     <span class="slider"></span>
-    </label>
-
-   </div>
-
-
-   <div class="setting">
-
-    <div>
-     <div class="setting-name">Show Coordinates</div>
-     <div class="setting-desc">
-      Display bot position
-     </div>
-    </div>
-
-    <label class="switch">
-     <input id="showCoordinates" type="checkbox">
-     <span class="slider"></span>
-    </label>
-
-   </div>
-
-
-   <div class="setting">
-
-    <div>
-     <div class="setting-name">Interface Sounds</div>
-     <div class="setting-desc">
-      Enable animated UI sounds
-     </div>
-    </div>
-
-    <label class="switch">
-     <input id="sounds" type="checkbox">
-     <span class="slider"></span>
-    </label>
-
-   </div>
-
-
-   <div class="setting">
-
-    <div>
-     <div class="setting-name">Refresh Rate</div>
-     <div class="setting-desc">
-      Live dashboard update speed
-     </div>
-    </div>
-
-    <select id="refreshRate" class="select">
-     <option value="2000">2 Seconds</option>
-     <option value="5000">5 Seconds</option>
-     <option value="10000">10 Seconds</option>
-    </select>
-
-   </div>
-
-
-   <button class="save" onclick="saveSettings()">
-    SAVE SETTINGS
-   </button>
-
-  </div>
-
- </div>
-
-</div>
-
-
-<div id="toasts" class="toasts"></div>
-
-
-<script>
-
-let timer=null;
-let audio=null;
-
-
-/* SOUND ENGINE */
-
-function playSound(type="click"){
-
- try{
-
-  if(
-   document.getElementById("sounds") &&
-   !document.getElementById("sounds").checked
-  ) return;
-
-  audio ??=
-   new (
-    window.AudioContext ||
-    window.webkitAudioContext
-   )();
-
-  const osc=audio.createOscillator();
-  const gain=audio.createGain();
-
-  osc.connect(gain);
-  gain.connect(audio.destination);
-
-  const now=audio.currentTime;
-
-  osc.frequency.value=
-   type==="success" ? 720 :
-   type==="error" ? 180 :
-   440;
-
-  gain.gain.setValueAtTime(.0001,now);
-
-  gain.gain.exponentialRampToValueAtTime(
-   .04,now+.01
-  );
-
-  gain.gain.exponentialRampToValueAtTime(
-   .0001,now+.12
-  );
-
-  osc.start(now);
-  osc.stop(now+.13);
-
- }catch{}
-
-}
-
-
-/* TOAST */
-
-function toast(message,type="success"){
-
- playSound(type);
-
- const parent=
-  document.getElementById("toasts");
-
- const el=
-  document.createElement("div");
-
- el.className=
-  "toast "+type;
-
- el.textContent=
-  message;
-
- parent.appendChild(el);
-
- setTimeout(()=>{
-
-  el.style.opacity="0";
-  el.style.transform="translateX(20px)";
-
-  setTimeout(
-   ()=>el.remove(),
-   250
-  );
-
- },2800);
-
-}
-
-
-/* FORMAT */
-
-function formatTime(s){
-
- s=Math.floor(s||0);
-
- const h=Math.floor(s/3600);
- const m=Math.floor((s%3600)/60);
- const sec=s%60;
-
- if(h)return h+"h "+m+"m "+sec+"s";
- if(m)return m+"m "+sec+"s";
-
- return sec+"s";
-
-}
-
-
-/* STATUS */
-
-async function refreshStatus(){
-
- try{
-
-  const r=
-   await fetch("/health");
-
-  const d=
-   await r.json();
-
-  const online=
-   d.status==="connected";
-
-
-  const icon=
-   document.getElementById("statusIcon");
-
-  icon.className=
-   "status-icon "+
-   (online?"online":"");
-
-  icon.textContent=
-   online?"✓":"✕";
-
-
-  document.getElementById("statusTitle")
-   .textContent=
-   online
-    ?"Bot Connected"
-    :"Bot Disconnected";
-
-
-  document.getElementById("statusDesc")
-   .textContent=
-   online
-    ?"Bot is active on the server"
-    :"Waiting for connection";
-
-
-  const badge=
-   document.getElementById("badge");
-
-  badge.className=
-   "badge "+(online?"online":"");
-
-  badge.textContent=
-   online?"ONLINE":"OFFLINE";
-
-
-  document.getElementById("uptime")
-   .textContent=
-   formatTime(d.uptime);
-
-
-  document.getElementById("memory")
-   .textContent=
-   Math.round(
-    d.memoryUsage||0
-   )+" MB";
-
-
-  if(d.coords){
-
-   document.getElementById("coords")
-    .textContent=
-    Math.floor(d.coords.x)+
-    ", "+
-    Math.floor(d.coords.y)+
-    ", "+
-    Math.floor(d.coords.z);
-
-  }else{
-
-   document.getElementById("coords")
-    .textContent="—";
-
-  }
-
- }catch{
-
-  document.getElementById("statusTitle")
-   .textContent=
-   "Panel Unreachable";
-
- }
-
-}
-
-
-/* LOGS */
-
-async function refreshLogs(){
-
- try{
-
-  const r=
-   await fetch("/api/logs");
-
-  const d=
-   await r.json();
-
-  const logs=
-   Array.isArray(d.logs)
-    ?d.logs
-    :[];
-
-
-  document.getElementById("logCount")
-   .textContent=
-   logs.length+" entries";
-
-
-  const box=
-   document.getElementById("logs");
-
-
-  if(!logs.length){
-
-   box.innerHTML=
-    '<div class="log">No logs available.</div>';
-
-   return;
-
-  }
-
-
-  box.innerHTML=
-   logs.slice(-150)
-   .map(x=>
-    '<div class="log">'+
-    escapeHTML(String(x))+
-    '</div>'
-   )
-   .join("");
-
-
-  box.scrollTop=
-   box.scrollHeight;
-
- }catch{
-
-  document.getElementById("logs")
-   .innerHTML=
-   '<div class="log">Log connection failed.</div>';
-
- }
-
-}
-
-
-function escapeHTML(s){
-
- return s
-  .replaceAll("&","&amp;")
-  .replaceAll("<","&lt;")
-  .replaceAll(">","&gt;")
-  .replaceAll('"',"&quot;")
-  .replaceAll("'","&#039;");
-
-}
-
-
-/* BOT ACTION */
-
-async function botAction(url,message){
-
- const button=
-  event?.currentTarget;
-
- if(button){
-
-  button.classList.add("loading");
-
-  button.innerHTML=
-   '<span class="spinner"></span>'+
-   message.toUpperCase();
-
- }
-
- playSound();
-
- toast(message,"success");
-
- try{
-
-  const r=
-   await fetch(url,{
-    method:"POST"
-   });
-
-  const d=
-   await r.json();
-
-  toast(
-   d.msg ||
-   (d.success
-    ?"Action completed"
-    :"Action failed"),
-   d.success
-    ?"su
+ inset:0
