@@ -6,7 +6,7 @@
     "type": "offline"
   },
   "server": {
-    "ip": "LIFEsteleesmp.aternos.me",
+    "ip": "example.aternos.me",
     "port": 37332,
     "version": "1.21.11",
     "try-creative": false
