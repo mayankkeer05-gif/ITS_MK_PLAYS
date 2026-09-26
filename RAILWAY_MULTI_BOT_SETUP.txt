@@ -1,0 +1,21 @@
+ITS_MK MULTI-BOT PANEL
+
+1) Replace your current entry file with index.js from this package.
+2) Keep bot_worker.js in the same folder.
+3) Keep your existing settings.json and logger.js in the same folder.
+4) Railway Variables:
+   PANEL_TOKEN=your-long-random-secret
+   PORT=5000   (Railway normally sets PORT automatically; do not hard-code if unnecessary)
+5) Install dependencies already used by your project plus discord.js if Discord control is wanted.
+
+HOW IT WORKS
+- The main index.js is the multi-bot manager.
+- Each bot gets its own settings file under multi-bots/<bot-id>/settings.json.
+- Each bot runs in a separate worker process.
+- Add Bot from the dashboard, then Start/Stop/Restart/Chat/Command/Settings independently.
+- The first existing settings.json is copied to Bot 1 automatically on first launch.
+
+IMPORTANT
+- This package is designed for a Railway service/container that can run multiple Node child processes.
+- Bot count is limited by Railway CPU/RAM and the Minecraft servers.
+- Keep PANEL_TOKEN secret. Do not put it in frontend code.
